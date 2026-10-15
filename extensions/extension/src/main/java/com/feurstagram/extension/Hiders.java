@@ -7,6 +7,14 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.widget.HorizontalScrollView;
 
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
+
 /**
  * UI-level hiders and the landing-page redirect, all installed on the main
  * tab bar. Each is a persistent global-layout listener that resolves its
@@ -42,6 +50,8 @@ public final class Hiders {
         observer.addOnGlobalLayoutListener(new VisibilityHider(root, "nav_show_profile", true, true, null, "profile_tab"));
         // "Friends" tab in the Reels viewer header.
         observer.addOnGlobalLayoutListener(new FriendsLaneHider(root));
+        // Lock the reel viewer's swipe when the toggle is on.
+        observer.addOnGlobalLayoutListener(new ReelSwipeLocker(root));
         // Cold-start landing-page redirect.
         observer.addOnGlobalLayoutListener(new LandingWatcher(root));
         // Keep swipes off the pages whose tab was hidden.
@@ -173,6 +183,110 @@ public final class Hiders {
             for (int i = 1; i < strip.getChildCount(); i++) {
                 strip.getChildAt(i).setVisibility(visibility);
             }
+        }
+    }
+
+    /**
+     * Disables swipe navigation in the reel viewer while the toggle is on
+     * (issue #108). The tray is a vertical ViewPager2, found structurally
+     * since androidx is obfuscated; scoped by clips_viewer_action_bar.
+     */
+    static final class ReelSwipeLocker implements ViewTreeObserver.OnGlobalLayoutListener {
+        /** ViewPager2's orientation constant for a vertical pager. */
+        private static final int ORIENTATION_VERTICAL = 1;
+
+        private final ViewGroup root;
+        /** Pagers currently locked, so a re-walk doesn't redo the lookup. */
+        private final Set<View> locked =
+                Collections.newSetFromMap(new WeakHashMap<View, Boolean>());
+        /** Reflected pager methods per class ({getOrientation, setUserInputEnabled, getScrollState}); empty on a miss. */
+        private final Map<Class<?>, Method[]> pagerMethods = new HashMap<>();
+
+        ReelSwipeLocker(ViewGroup root) {
+            this.root = root;
+        }
+
+        @Override
+        public void onGlobalLayout() {
+            Context context = root.getContext();
+            if (context == null) return;
+            View searchRoot = root.getRootView();
+            if (searchRoot == null) searchRoot = root;
+
+            boolean wantLock = Config.isReelSwipeLocked() && isViewerVisible(context, searchRoot);
+
+            // Re-apply the state to known pagers (cheap); forget the detached ones.
+            Iterator<View> it = locked.iterator();
+            while (it.hasNext()) {
+                View pager = it.next();
+                if (!pager.isAttachedToWindow()) {
+                    it.remove();
+                    continue;
+                }
+                setUserInputEnabled(pager, !wantLock);
+            }
+            if (!wantLock) {
+                locked.clear();
+                return;
+            }
+            // Find vertical pagers that appeared since the last pass.
+            collectVerticalPagers(searchRoot);
+        }
+
+        /** True while the clips viewer's action bar is on screen. */
+        private boolean isViewerVisible(Context context, View searchRoot) {
+            int barId = resolveId(context, "clips_viewer_action_bar");
+            return barId != 0 && searchRoot.findViewById(barId) != null;
+        }
+
+        private void collectVerticalPagers(View view) {
+            if (isVerticalPager(view) && !locked.contains(view)) {
+                setUserInputEnabled(view, false);
+                locked.add(view);
+            }
+            if (view instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) view;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    collectVerticalPagers(group.getChildAt(i));
+                }
+            }
+        }
+
+        private boolean isVerticalPager(View view) {
+            Method[] methods = pagerMethodsOf(view.getClass());
+            if (methods.length == 0) return false;
+            try {
+                Object orientation = methods[0].invoke(view);
+                return orientation instanceof Integer
+                        && ((Integer) orientation) == ORIENTATION_VERTICAL;
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        private void setUserInputEnabled(View pager, boolean enabled) {
+            Method[] methods = pagerMethodsOf(pager.getClass());
+            if (methods.length == 0) return;
+            try {
+                methods[1].invoke(pager, enabled);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        private Method[] pagerMethodsOf(Class<?> clazz) {
+            if (pagerMethods.containsKey(clazz)) return pagerMethods.get(clazz);
+            Method[] found;
+            try {
+                found = new Method[]{
+                        clazz.getMethod("getOrientation"),
+                        clazz.getMethod("setUserInputEnabled", boolean.class),
+                        clazz.getMethod("getScrollState"),
+                };
+            } catch (Throwable ignored) {
+                found = new Method[0];
+            }
+            pagerMethods.put(clazz, found);
+            return found;
         }
     }
 
