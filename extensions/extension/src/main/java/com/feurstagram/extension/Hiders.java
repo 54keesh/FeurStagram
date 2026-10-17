@@ -189,7 +189,8 @@ public final class Hiders {
     /**
      * Disables swipe navigation in the reel viewer while the toggle is on
      * (issue #108). The tray is a vertical ViewPager2, found structurally
-     * since androidx is obfuscated; scoped by clips_viewer_action_bar.
+     * since androidx is obfuscated; deliberately not scoped to the clips
+     * action bar, which the link/DM viewer variants don't have.
      */
     static final class ReelSwipeLocker implements ViewTreeObserver.OnGlobalLayoutListener {
         /** ViewPager2's orientation constant for a vertical pager. */
@@ -208,12 +209,10 @@ public final class Hiders {
 
         @Override
         public void onGlobalLayout() {
-            Context context = root.getContext();
-            if (context == null) return;
             View searchRoot = root.getRootView();
             if (searchRoot == null) searchRoot = root;
 
-            boolean wantLock = Config.isReelSwipeLocked() && isViewerVisible(context, searchRoot);
+            boolean wantLock = Config.isReelSwipeLocked();
 
             // Re-apply the state to known pagers (cheap); forget the detached ones.
             Iterator<View> it = locked.iterator();
@@ -231,12 +230,6 @@ public final class Hiders {
             }
             // Find vertical pagers that appeared since the last pass.
             collectVerticalPagers(searchRoot);
-        }
-
-        /** True while the clips viewer's action bar is on screen. */
-        private boolean isViewerVisible(Context context, View searchRoot) {
-            int barId = resolveId(context, "clips_viewer_action_bar");
-            return barId != 0 && searchRoot.findViewById(barId) != null;
         }
 
         private void collectVerticalPagers(View view) {
