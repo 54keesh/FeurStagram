@@ -1,7 +1,10 @@
 package com.feurstagram.extension;
 
+import android.app.Activity;
+import android.app.Application;
 import android.content.Context;
 import android.content.res.Resources;
+import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -52,10 +55,51 @@ public final class Hiders {
         observer.addOnGlobalLayoutListener(new FriendsLaneHider(root));
         // Lock the reel viewer's swipe when the toggle is on.
         observer.addOnGlobalLayoutListener(new ReelSwipeLocker(root));
+        // Reel links/DMs open in their own viewer activity, outside this window.
+        hookViewerActivities(root);
         // Cold-start landing-page redirect.
         observer.addOnGlobalLayoutListener(new LandingWatcher(root));
         // Keep swipes off the pages whose tab was hidden.
         HiddenTabSwipeSkipper.install(root);
+    }
+
+    private static boolean viewerHookInstalled;
+
+    /**
+     * Attach {@link ReelSwipeLocker} to every activity window. Reel deep links
+     * and DM shares open in their own viewer activity, outside the main window
+     * {@link #installAll} was installed on.
+     */
+    private static void hookViewerActivities(ViewGroup root) {
+        if (viewerHookInstalled) return;
+        Context context = Settings.getActivityContext(root);
+        if (!(context instanceof Activity)) return;
+        Application app = ((Activity) context).getApplication();
+        if (app == null) return;
+        viewerHookInstalled = true;
+        app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+            private final Set<Activity> hooked =
+                    Collections.newSetFromMap(new WeakHashMap<Activity, Boolean>());
+
+            @Override
+            public void onActivityResumed(Activity activity) {
+                if (!hooked.add(activity)) return;
+                View decor = activity.getWindow().getDecorView();
+                if (decor instanceof ViewGroup) {
+                    decor.getViewTreeObserver()
+                            .addOnGlobalLayoutListener(new ReelSwipeLocker((ViewGroup) decor));
+                }
+            }
+
+            @Override public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+            @Override public void onActivityStarted(Activity activity) {}
+            @Override public void onActivityPaused(Activity activity) {}
+            @Override public void onActivityStopped(Activity activity) {}
+            @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+            @Override public void onActivityDestroyed(Activity activity) {
+                hooked.remove(activity);
+            }
+        });
     }
 
     static int resolveId(Context context, String name) {
